@@ -1,0 +1,44 @@
+erDiagram
+    PRESENTATION ||--o{ SLIDE : contains
+    SLIDE ||--o{ IMAGE_ASSET : has
+    
+    PRESENTATION {
+        uuid id PK
+        string content "User topic/input"
+        int n_slides "Number of slides"
+        string language "Presentation language"
+        json file_paths "Uploaded files"
+        string tone "professional, casual, etc"
+        string verbosity "concise, standard, detailed"
+        string instructions "Custom user instructions"
+        boolean include_table_of_contents
+        boolean include_title_slide
+        boolean web_search
+        string title "Generated title"
+        json outlines "LLM-generated outlines"
+        json layout "Template/theme info"
+        json structure "Slide layout indices"
+        datetime created_at
+        datetime updated_at
+    }
+    
+    SLIDE {
+        uuid id PK
+        uuid presentation FK "Links to presentation"
+        string layout_group "Template name"
+        string layout "Layout ID from template"
+        int index "Slide position (0-indexed)"
+        json content "Slide content (title, text, images)"
+        string speaker_note "Speaker notes"
+        datetime created_at
+    }
+    
+    IMAGE_ASSET {
+        uuid id PK
+        uuid slide_id FK "Links to slide"
+        string file_path "Path to image file"
+        string image_type "generated, stock, icon"
+        string source "dall-e-3, pexels, gemini, etc"
+        string prompt "AI generation prompt"
+        datetime created_at
+    }
