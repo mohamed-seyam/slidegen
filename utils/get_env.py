@@ -23,3 +23,6 @@ def get_custom_image_api_url_env():
 
 def get_custom_image_api_key_env():
     return os.getenv("CUSTOM_IMAGE_API_KEY")
+
+def get_database_url_env():
+    return os.getenv("DATABASE_URL")

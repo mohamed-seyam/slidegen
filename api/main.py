@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from api.lifespan import app_lifespan
 
 app = FastAPI(
     title="slideGen API",
     description="API for generating slides from text using AI.",
     version="0.1.0",
+    lifespan=app_lifespan
 )
 
 # CORS Middleware - Cross-Origin Resource Sharing
@@ -29,5 +31,3 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
-

@@ -1,0 +1,66 @@
+graph TD
+    Start([Application Starts]) --> GetDBUrl[get_database_url_and_connect_args]
+    
+    GetDBUrl --> CheckEnv{Database URL<br/>from ENV?}
+    CheckEnv -->|Yes| EnvUrl[Use DATABASE_URL]
+    CheckEnv -->|No| DefaultUrl[Default: SQLite<br/>/tmp/presenton/fastapi.db]
+    
+    EnvUrl --> ConvertDriver[Convert to Async Driver]
+    DefaultUrl --> ConvertDriver
+    
+    ConvertDriver --> IsSQLite{Is SQLite?}
+    ConvertDriver --> IsPostgres{Is PostgreSQL?}
+    ConvertDriver --> IsMySQL{Is MySQL?}
+    
+    IsSQLite -->|Yes| SQLiteConvert[sqlite:// →<br/>sqlite+aiosqlite://]
+    IsPostgres -->|Yes| PostgresConvert[postgresql:// →<br/>postgresql+asyncpg://]
+    IsMySQL -->|Yes| MySQLConvert[mysql:// →<br/>mysql+aiomysql://]
+    
+    SQLiteConvert --> SetConnArgs[Set Connection Args]
+    PostgresConvert --> SetConnArgs
+    MySQLConvert --> SetConnArgs
+    
+    SetConnArgs --> SQLiteArgs{Is SQLite?}
+    SQLiteArgs -->|Yes| AddThreadArg[Add: check_same_thread=False]
+    SQLiteArgs -->|No| ParseURL
+    
+    AddThreadArg --> ParseURL[Parse URL for Query Params]
+    
+    ParseURL --> CheckSSL{Has sslmode param<br/>& PostgreSQL?}
+    CheckSSL -->|Yes| SSLMode{sslmode != disable?}
+    CheckSSL -->|No| ReturnConfig
+    
+    SSLMode -->|Yes| AddSSL[Add SSL context to connect_args]
+    SSLMode -->|No| ReturnConfig[Return database_url, connect_args]
+    AddSSL --> StripQuery[Strip query params from URL]
+    StripQuery --> ReturnConfig
+    
+    ReturnConfig --> CreateEngines[Create Database Engines]
+    
+    CreateEngines --> MainEngine[Main Database Engine<br/>user-configured URL]
+    CreateEngines --> ContainerEngine[Container Database Engine<br/>sqlite:///app/container.db]
+    
+    MainEngine --> MainSession[async_session_maker<br/>expire_on_commit=False]
+    ContainerEngine --> ContainerSession[container_db_async_session_maker<br/>expire_on_commit=False]
+    
+    MainSession --> GetSession1[get_async_session<br/>dependency injector]
+    ContainerSession --> GetSession2[get_container_db_async_session<br/>dependency injector]
+    
+    GetSession1 --> CreateTables[create_db_and_tables]
+    GetSession2 --> CreateTables
+    
+    CreateTables --> MainTables[Create Main DB Tables:<br/>- PresentationModel<br/>- SlideModel<br/>- KeyValueSqlModel<br/>- ImageAsset<br/>- PresentationLayoutCodeModel<br/>- TemplateModel<br/>- WebhookSubscription<br/>- AsyncPresentationGenerationTaskModel]
+    
+    CreateTables --> ContainerTables[Create Container DB Tables:<br/>- OllamaPullStatus]
+    
+    MainTables --> Ready([Database Ready])
+    ContainerTables --> Ready
+    
+    style Start fill:#e1f5e1
+    style Ready fill:#e1f5e1
+    style MainEngine fill:#fff4e6
+    style ContainerEngine fill:#e6f3ff
+    style MainTables fill:#fff4e6
+    style ContainerTables fill:#e6f3ff
+    style AddSSL fill:#ffe6e6
+    style GetDBUrl fill:#f0e6ff
