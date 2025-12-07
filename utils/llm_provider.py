@@ -1,10 +1,11 @@
 from fastapi import HTTPException
-from api.enums.llm_provider import LLMProvider
-from api.utils.get_env import (
+from enums.llm_provider import LLMProvider
+from utils.get_env import (
     get_llm_provider_env,
     get_custom_llm_api_key_env, 
     get_custom_image_api_url_env, 
-    get_custom_model_env
+    get_custom_model_env,
+    get_qwen_model_env
 )
 
 def get_llm_provider():
@@ -22,12 +23,19 @@ def is_openai_selected():
 def is_custom_selected():
     return get_llm_provider() == LLMProvider.CUSTOM
 
+def is_qwen_selected():
+    return get_llm_provider() == LLMProvider.QWEN
+
 
 def get_model():
     selected_llm = get_llm_provider()
+
     if selected_llm == LLMProvider.CUSTOM:
         return get_custom_model_env()
-    # ELIF
+    
+    elif selected_llm == LLMProvider.QWEN:
+        return get_qwen_model_env()
+    
     else:
         raise HTTPException(
             status_code = 500,

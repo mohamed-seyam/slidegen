@@ -15,6 +15,24 @@ def get_custom_llm_api_key_env():
 def get_custom_model_env():
     return os.getenv("CUSTOM_LLM_MODEL")
 
+
+def get_qwen_llm_url_env():
+    return os.getenv("QWEN_LLM_URL")
+
+def get_qwen_llm_api_key_env():
+    return os.getenv("QWEN_LLM_API_KEY")
+
+def get_qwen_model_env():
+    return os.getenv("QWEN_LLM_MODEL")
+
+
+def get_openai_llm_url_env():
+    return os.getenv("OPENAI_LLM_URL")
+
+def get_openai_llm_api_key_env():
+    return os.getenv("OPENAI_LLM_API_KEY")
+
+
 def get_image_provider_env():
     return os.getenv("IMAGE_PROVIDER", "DALL-E")
 
@@ -26,3 +44,5 @@ def get_custom_image_api_key_env():
 
 def get_database_url_env():
     return os.getenv("DATABASE_URL")
+
+

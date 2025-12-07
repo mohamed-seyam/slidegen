@@ -5,4 +5,6 @@ class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
     COHERE = "cohere"
     CUSTOM = "custom"
+    QWEN = "qwen"
+    
 
