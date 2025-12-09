@@ -46,3 +46,8 @@ def get_database_url_env():
     return os.getenv("DATABASE_URL")
 
 
+def get_disable_thinking_env():
+    return os.getenv("DISABLE_THINKING")
+
+def get_tool_calls_env():
+    return os.getenv("TOOL_CALLS")
