@@ -1,6 +1,11 @@
 import dirtyjson
 from fastapi import HTTPException
 from openai import AsyncOpenAI
+from typing import AsyncGenerator
+from openai.types.chat.chat_completion_chunk import (
+    ChatCompletionChunk as OpenAIChatCompletionChunk
+)
+
 
 from utils.llm_provider import get_llm_provider, get_model
 from enums.llm_provider import LLMProvider
@@ -18,6 +23,7 @@ from utils.schema_utils import ensure_strict_json_schema
 from utils.dummy_functions import do_nothing_async
 
 from services.llm_tool_calls_handler import LLMToolCallsHandler
+from models.llm_tool_call import LLMToolCall
 
 from models.llm_tools import LLMDynamicTool, LLMTool
 from typing import List, Optional
@@ -100,10 +106,10 @@ class LLM_Client:
         )
 
         if len(response.choices) == 0:
-            return None 
-        
+            return None
+
         tool_calls = response.choices[0].message.tool_calls
-        
+
         if tool_calls:
 
             parsed_tool_calls = []
@@ -394,6 +400,195 @@ class LLM_Client:
 
         return content 
 
+    async def _stream_openai(
+            self,
+            model: str,
+            messages: List[LLMMessage],
+            max_tokens: Optional[int] = None,
+            tools: Optional[List[dict]] = None, 
+            extra_body: Optional[dict] = None, 
+            depth: int = 0 
+    )-> AsyncGenerator:
+        client: AsyncOpenAI = self._client
+
+        tool_calls: List[LLMToolCall] = []
+        current_index = 0
+        current_id = None
+        current_name = None
+        current_arguments = None
+        has_tool_calls = False  # Track if we've seen any tool calls
+        in_tool_call_text = False  # Track if we're inside <tool_call> text
+        tool_call_text_buffer = ""  # Accumulate <tool_call> text for manual parsing
+
+        async for event in await client.chat.completions.create(
+            model = model,
+            messages = [msg.model_dump() for msg in messages],
+            max_completion_tokens=max_tokens,
+            tools= tools,
+            extra_body=extra_body,
+            stream=True
+        ):
+            event: OpenAIChatCompletionChunk = event
+            if not event.choices:
+                continue
+
+            content_chunk = event.choices[0].delta.content
+            tool_call_chunk = event.choices[0].delta.tool_calls
+
+            if tool_call_chunk:
+                has_tool_calls = True  # Mark that we've seen tool calls
+                tool_index = tool_call_chunk[0].index
+                tool_id = tool_call_chunk[0].id
+                tool_name = tool_call_chunk[0].function.name
+                tool_arguments = tool_call_chunk[0].function.arguments
+
+                # Check if this is a new tool (index changed) or continuation of current tool
+                if current_index != tool_index:
+                    if current_id is not None:
+                        tool_calls.append(
+                            OpenAIToolCall(
+                                id=current_id,
+                                type="function",
+                                function=OpenAIToolCallFunction(
+                                    name=current_name,
+                                    arguments=current_arguments
+                                )
+                            )
+                        )
+
+                    current_index = tool_index
+                    current_id = tool_id
+                    current_name = tool_name
+                    current_arguments = tool_arguments
+
+                else:
+                    current_name = tool_name or current_name
+                    current_id = tool_id or current_id
+                    if current_arguments is None:
+                        current_arguments = tool_arguments
+                    elif tool_arguments:
+                        current_arguments += tool_arguments
+
+            # Handle content chunks
+            if content_chunk and not has_tool_calls:
+                # Check if we're entering a tool call text block
+                if '<tool_call>' in content_chunk:
+                    in_tool_call_text = True
+                    tool_call_text_buffer = content_chunk  # Start accumulating
+
+                # Accumulate tool call text
+                elif in_tool_call_text:
+                    tool_call_text_buffer += content_chunk
+
+                # Check if we're exiting a tool call text block
+                if '</tool_call>' in content_chunk:
+                    in_tool_call_text = False
+                    continue  # Skip this chunk entirely
+
+                # Only yield if we're not inside a tool call text block
+                if not in_tool_call_text:
+                    yield content_chunk
+
+        # After stream ends, save the last tool call if any
+        if current_id is not None:
+            tool_calls.append(
+                OpenAIToolCall(
+                    id=current_id,
+                    type="function",
+                    function=OpenAIToolCallFunction(
+                        name = current_name,
+                        arguments=current_arguments
+                    )
+                )
+            )
+
+        # Parse tool call text if we accumulated any (Qwen fallback)
+        if tool_call_text_buffer and not tool_calls:
+            import json
+            import re
+            # Extract JSON from <tool_call>...</tool_call>
+            match = re.search(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', tool_call_text_buffer, re.DOTALL)
+            if match:
+                try:
+                    tool_data = json.loads(match.group(1))
+                    tool_calls.append(
+                        OpenAIToolCall(
+                            id="manual_tool_call_0",
+                            type="function",
+                            function=OpenAIToolCallFunction(
+                                name=tool_data.get("name"),
+                                arguments=json.dumps(tool_data.get("arguments", {}))
+                            )
+                        )
+                    )
+                    has_tool_calls = True
+                except json.JSONDecodeError:
+                    pass  # Silently fail if parsing fails
+
+        if tool_calls:
+            tool_call_messages = await self.tool_call_handler.handle_tool_calls_openai(
+                tool_calls
+            )
+
+            new_messages = [
+                *messages,
+                OpenAIAssistantMessage(
+                    role = "assistant",
+                    content=None,
+                    tool_calls=[each.model_dump() for each in tool_calls]
+
+                ),
+                *tool_call_messages
+            ]
+
+            async for event in self._stream_openai(
+                model = model,
+                messages = new_messages,
+                max_tokens=max_tokens,
+                tools = tools,
+                extra_body=extra_body,
+                depth = depth + 1
+            ):
+                yield event 
+            
+    
+    def stream(
+            self,
+            model:str,
+            messages: List[LLMMessage],
+            max_tokens: Optional[int] = None,
+            tools: Optional[List[type[LLMTool] | LLMDynamicTool]] = None,
+    ):
+        
+        parsed_tools = self.tool_call_handler.parse_tools(tools) if tools else None 
+
+        # stream based on provider
+        match self.llm_provider:
+            case  LLMProvider.OPENAI:
+                return self._stream_openai(
+                    model = model, 
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    tools = parsed_tools
+                )
+            
+            case LLMProvider.QWEN:
+                extra_body = {"enable_thinking": False} if self.disable_thinking() else None
+                return self._stream_openai(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    tools=parsed_tools,
+                    extra_body=extra_body
+                )
+            case _:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Streaming not implemented for provider: {self.llm_provider}"
+                )
+
+
+        
     async def _get_system_prompt(self, messages: List[LLMMessage]):
         for msg in messages:
             if isinstance(msg, LLMSystemMessage):
