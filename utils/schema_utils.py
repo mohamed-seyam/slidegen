@@ -398,3 +398,94 @@ def generate_constraint_sentences(schema: dict) -> str:
     extract_constraints_recursive(schema)
 
     return "\n".join(constraints)
+
+
+def convert_schema_to_pydantic(response_schema: dict | type, strict: bool = False):
+    """
+    Convert a JSON schema dict or Pydantic model to a Pydantic model.
+    
+    Args:
+        response_schema: Either a JSON schema dictionary or a Pydantic BaseModel class
+        strict: Whether to apply strict JSON schema validation (only for dict input)
+    
+    Returns:
+        A Pydantic BaseModel class
+    
+    Example:
+        # From JSON schema
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "integer"}
+            },
+            "required": ["name"]
+        }
+        Model = convert_schema_to_pydantic(schema)
+        
+        # From existing Pydantic model
+        class UserProfile(BaseModel):
+            name: str
+            age: int
+        Model = convert_schema_to_pydantic(UserProfile)  # Returns UserProfile
+    """
+    from pydantic import BaseModel, create_model, Field
+    from typing import Any, get_origin, get_args
+    import inspect
+    
+    # Check if it's already a Pydantic model
+    if inspect.isclass(response_schema) and issubclass(response_schema, BaseModel):
+        return response_schema
+    
+    # It's a JSON schema dict, convert it to Pydantic
+    if not isinstance(response_schema, dict):
+        raise TypeError(
+            f"response_schema must be either a dict or Pydantic BaseModel class, "
+            f"got {type(response_schema)}"
+        )
+    
+    schema_to_use = response_schema
+    if strict:
+        schema_to_use = ensure_strict_json_schema(
+            response_schema,
+            path=(),
+            root=response_schema,
+        )
+    
+    # Build field definitions from schema properties
+    fields = {}
+    if "properties" in schema_to_use:
+        for field_name, field_schema in schema_to_use["properties"].items():
+            # Determine the Python type based on JSON schema type
+            field_type = Any  # Default to Any
+            field_description = field_schema.get("description")
+            
+            if "type" in field_schema:
+                type_map = {
+                    "string": str,
+                    "integer": int,
+                    "number": float,
+                    "boolean": bool,
+                    "array": list,
+                    "object": dict
+                }
+                field_type = type_map.get(field_schema["type"], Any)
+            
+            # Check if field is required
+            is_required = field_name in schema_to_use.get("required", [])
+            
+            # Create Field with description if available
+            if field_description:
+                if is_required:
+                    fields[field_name] = (field_type, Field(..., description=field_description))
+                else:
+                    fields[field_name] = (field_type, Field(default=None, description=field_description))
+            else:
+                default = ... if is_required else None
+                fields[field_name] = (field_type, default)
+    
+    # Create the Pydantic model
+    model_name = schema_to_use.get("title", "DynamicModel")
+    ResponseSchemaModel = create_model(model_name, **fields)
+    
+    return ResponseSchemaModel
