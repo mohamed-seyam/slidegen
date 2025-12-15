@@ -51,3 +51,7 @@ def get_disable_thinking_env():
 
 def get_tool_calls_env():
     return os.getenv("TOOL_CALLS")
+
+
+def get_temp_directory_env():
+    return os.getenv("TEMP_DIRECTORY")

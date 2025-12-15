@@ -1,0 +1,22 @@
+flowchart LR
+    subgraph "Database State Evolution"
+        direction TB
+        
+        S1["<b>Stage 1: Created</b><br/>─────────────<br/>✓ content<br/>✓ n_slides<br/>✓ language<br/>✓ tone, verbosity<br/>✓ file_paths<br/>✗ outlines<br/>✗ layout<br/>✗ structure<br/>✗ title"]
+        
+        S2["<b>Stage 2: Outlined</b><br/>─────────────<br/>✓ content<br/>✓ n_slides<br/>✓ language<br/>✓ tone, verbosity<br/>✓ file_paths<br/>✓ outlines<br/>✗ layout<br/>✗ structure<br/>✓ title"]
+        
+        S3["<b>Stage 3: Prepared</b><br/>─────────────<br/>✓ content<br/>✓ n_slides<br/>✓ language<br/>✓ tone, verbosity<br/>✓ file_paths<br/>✓ outlines<br/>✓ layout<br/>✓ structure<br/>✓ title"]
+        
+        S4["<b>Stage 4: Complete</b><br/>─────────────<br/>✓ PresentationModel<br/>✓ SlideModel records<br/>✓ ImageAsset records<br/>✓ LayoutCode records<br/>Ready for export!"]
+    end
+    
+    S1 -->|"POST /create"| S1
+    S1 -->|"GET /outlines/stream/{id}"| S2
+    S2 -->|"POST /prepare"| S3
+    S3 -->|"GET /stream/{id}"| S4
+    
+    style S1 fill:#ffebee,stroke:#c62828
+    style S2 fill:#fff3e0,stroke:#ef6c00
+    style S3 fill:#e8f5e9,stroke:#2e7d32
+    style S4 fill:#e3f2fd,stroke:#1565c0

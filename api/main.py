@@ -1,12 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.lifespan import app_lifespan
+from api.v1.ppt.router import API_V1_PPT_ROUTER
 
 app = FastAPI(
     title="slideGen API",
     description="API for generating slides from text using AI.",
     version="0.1.0",
     lifespan=app_lifespan
+)
+
+app.include_router(
+    API_V1_PPT_ROUTER,
 )
 
 # CORS Middleware - Cross-Origin Resource Sharing
@@ -20,6 +25,7 @@ app.add_middleware(
     allow_methods=["*"],     # Allow GET, POST, PUT, DELETE, etc.
     allow_headers=["*"],     # Allow any headers
 )
+
 
 # Root endpoint - Simple welcome message
 @app.get("/")

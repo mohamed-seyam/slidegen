@@ -10,12 +10,15 @@ from utils.get_env import (
 )
 from enums.llm_provider import LLMProvider
 from fastapi import HTTPException
-from typing import List, Coroutine, Any, Callable, Optional
-from models.llm_message import LLMMessage
+from typing import List, Coroutine, Any, Callable, Optional, AsyncGenerator
+from models.llm_message import LLMMessage, OpenAIAssistantMessage, OpenAIToolCallMessage
 from utils.parser import parse_bool_or_none
 from utils.schema_utils import convert_schema_to_pydantic
 from utils.dummy_functions import do_nothing_async
 import dirtyjson
+import json
+import re
+import asyncio
 
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
@@ -23,7 +26,7 @@ from langchain_core.tools import tool as langchain_tool
 
 
 
-class Langraph_LLM_Client:
+class LLMLangChainClient:
     def __init__(self, tools: List[Callable[..., Coroutine[Any, Any, str]]]):
         self.llm_provider = get_llm_provider()
         self.llm = self._get_llm()
@@ -188,9 +191,17 @@ class Langraph_LLM_Client:
             return dict(result) if not isinstance(result, dict) else result
         
 
+    async def stream(
+        self,
+        messages: List[LLMMessage],
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        depth: int = 0
 
-            
+    ) -> AsyncGenerator:
+        """Real streaming: stream tokens from the LLM with manual tool handling
 
+        This mimics the original llm_client._stream_openai implementation
+        """
 
-
-
+        pass 

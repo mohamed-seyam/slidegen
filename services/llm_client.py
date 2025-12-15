@@ -180,7 +180,9 @@ class LLM_Client:
             tools: Optional[List[dict]] = None,
             extra_body: Optional[dict]=None,
             depth: int = 0
+
     ):
+        extra_body = {"enable_search": True}
         return await self._generate_openai(
             model = model, 
             messages=messages,
@@ -329,7 +331,7 @@ class LLM_Client:
                     for tool_call in tool_calls
                 ]
                 tool_call_messages = (
-                    await self.tool_calls_handler.handle_tool_calls_openai(
+                    await self.tool_call_handler.handle_tool_calls_openai(
                         parsed_tool_calls
                     )
                 )
@@ -588,7 +590,292 @@ class LLM_Client:
                 )
 
 
+    async def _stream_openai_structured(
+        self,
+        model: str,
+        messages: List[LLMMessage],
+        response_format: dict,
+        strict: bool = False,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[dict]] = None,
+        extra_body: Optional[dict] = None,
+        depth: int = 0,
+    ) -> AsyncGenerator[str, None]:
+
+        client: AsyncOpenAI = self._client
+        response_schema = response_format
+        all_tools = [*tools] if tools else None
+
+        use_tool_calls_for_structured_output = (
+            self.use_tool_calls_for_structured_output()
+        )
+
+        if strict and depth==0:
+            response_schema = ensure_strict_json_schema(
+                response_schema,
+                path=(),
+                root=response_schema,
+            )
+
+        if use_tool_calls_for_structured_output and depth == 0:
+            if all_tools  is None:
+                all_tools = []
+
+            all_tools.append(
+                self.tool_call_handler.parse_tool(
+                    LLMDynamicTool(
+                        name="ResponseSchema",
+                        description="Provide response to the user",
+                        parameters=response_schema,
+                        handler=do_nothing_async,
+                    ),
+                    strict=strict,
+                )
+            )
+
+        print(f"DEBUG: depth={depth}, num_messages={len(messages)}, tools_count={len(all_tools) if all_tools else 0}")
+        if all_tools:
+            print(f"DEBUG: Tools being sent to API: {[t.get('function', {}).get('name') for t in all_tools]}")
+        for i, msg in enumerate(messages):
+            msg_dict = msg.model_dump() if hasattr(msg, 'model_dump') else {}
+            print(f"DEBUG: Message {i}: role={msg_dict.get('role', 'unknown')}, content={str(msg_dict.get('content', ''))[:100]}, tool_calls={len(msg_dict.get('tool_calls', []))}")
+
+        tool_calls: List[LLMToolCall] = []
+        current_index = 0
+        current_id = None
+        current_name = None
+        current_arguments = None
+
+        has_response_schema_tool_call = False
+
+        # For QWEN text-based tool calls
+        in_tool_call_text = False
+        tool_call_text_buffer = ""
+
+        async for event in await client.chat.completions.create(
+            model=model,
+            messages=[message.model_dump() for message in messages],
+            max_completion_tokens=max_tokens,
+            tools=all_tools,
+            response_format=(
+                {
+                    "type": "json_schema",
+                    "json_schema": (
+                        {
+                            "name": "ResponseSchema",
+                            "strict": strict,
+                            "schema": response_schema,
+                        }
+                    ),
+                }
+                if not use_tool_calls_for_structured_output
+                else None
+            ),
+            extra_body=extra_body,
+            stream=True,
+        ):
+            event: OpenAIChatCompletionChunk = event
+            if not event.choices:
+                continue
+
+            content_chunk = event.choices[0].delta.content
+            if content_chunk:
+                # Check for text-based tool calls (QWEN format)
+                if '<tool_call>' in content_chunk:
+                    in_tool_call_text = True
+                    tool_call_text_buffer = content_chunk
+                elif in_tool_call_text:
+                    tool_call_text_buffer += content_chunk
+
+                if '</tool_call>' in content_chunk:
+                    in_tool_call_text = False
+
+                # Yield content based on mode
+                if not use_tool_calls_for_structured_output and not in_tool_call_text:
+                    # Not using tool calls for structured output - yield directly
+                    yield content_chunk
+
+            tool_call_chunk = event.choices[0].delta.tool_calls
+            if tool_call_chunk:
+                tool_index = tool_call_chunk[0].index
+                tool_id = tool_call_chunk[0].id
+                tool_name = tool_call_chunk[0].function.name
+                tool_arguments = tool_call_chunk[0].function.arguments
+
+                if current_index != tool_index:
+                    if current_id is not None:  # Only append if we have a valid tool
+                        tool_calls.append(
+                            OpenAIToolCall(
+                                id=current_id,
+                                type="function",
+                                function=OpenAIToolCallFunction(
+                                    name=current_name,
+                                    arguments=current_arguments,
+                                ),
+                            )
+                        )
+                    current_index = tool_index
+                    current_id = tool_id
+                    current_name = tool_name
+                    current_arguments = tool_arguments
+                else:
+                    current_name = tool_name or current_name
+                    current_id = tool_id or current_id
+                    if current_arguments is None:
+                        current_arguments = tool_arguments
+                    elif tool_arguments:
+                        current_arguments += tool_arguments
+
+                if current_name == "ResponseSchema":
+                    if tool_arguments:
+                        yield tool_arguments
+                    has_response_schema_tool_call = True
+
+        # Parse text-based tool call if we collected one
+        print(f"DEBUG: After stream - buffer_len={len(tool_call_text_buffer)}, buffer={repr(tool_call_text_buffer[:200])}")
+        if tool_call_text_buffer and use_tool_calls_for_structured_output:
+            import json
+            import re
+            match = re.search(r'<tool_call>\s*\n?\s*(\{.*?\})\s*\n?\s*</tool_call>', tool_call_text_buffer, re.DOTALL)
+            print(f"DEBUG: Regex match result: {match is not None}")
+            if match:
+                print(f"DEBUG: Matched tool call JSON: {repr(match.group(1)[:100])}")
+                try:
+                    tool_data = json.loads(match.group(1))
+                    tool_name = tool_data.get("name")
+                    tool_args = tool_data.get("arguments", {})
+                    print(f"DEBUG: Parsed tool: name={tool_name}, args={tool_args}")
+
+                    if tool_name == "ResponseSchema":
+                        # Yield the arguments as JSON string
+                        print(f"DEBUG: Yielding ResponseSchema arguments")
+                        yield json.dumps(tool_args)
+                        has_response_schema_tool_call = True
+                    else:
+                        # It's a different tool, add to tool_calls list
+                        print(f"DEBUG: Adding {tool_name} to tool_calls list for recursive handling")
+                        tool_calls.append(
+                            OpenAIToolCall(
+                                id="text_tool_call_0",
+                                type="function",
+                                function=OpenAIToolCallFunction(
+                                    name=tool_name,
+                                    arguments=json.dumps(tool_args)
+                                )
+                            )
+                        )
+                except json.JSONDecodeError as e:
+                    print(f"DEBUG: JSON decode error: {e}")
+                    pass
+
+        if current_id is not None:
+            tool_calls.append(
+                OpenAIToolCall(
+                    id=current_id,
+                    type="function",
+                    function=OpenAIToolCallFunction(
+                        name=current_name,
+                        arguments=current_arguments,
+                    ),
+                )
+            )
+
+        print(f"DEBUG: tool_calls={len(tool_calls)}, has_response_schema={has_response_schema_tool_call}")
+        if tool_calls and not has_response_schema_tool_call:
+            print(f"DEBUG: Handling {len(tool_calls)} tool calls and recursing...")
+            tool_call_messages = await self.tool_call_handler.handle_tool_calls_openai(
+                tool_calls
+            )
+            print(f"DEBUG: Got {len(tool_call_messages)} tool call messages")
+
+            # Filter out executed tools - only keep ResponseSchema for recursion
+            executed_tool_names = {tc.function.name for tc in tool_calls}
+            remaining_tools = [t for t in (all_tools or []) if t.get('function', {}).get('name') not in executed_tool_names] if all_tools else None
+            print(f"DEBUG: Executed tools: {executed_tool_names}, remaining tools: {[t.get('function', {}).get('name') for t in (remaining_tools or [])]}")
+
+            new_messages = [
+                *messages,
+                OpenAIAssistantMessage(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[each.model_dump() for each in tool_calls],
+                ),
+                *tool_call_messages,
+            ]
+            print(f"DEBUG: Recursing with depth={depth + 1}, total messages={len(new_messages)}")
+            async for event in self._stream_openai_structured(
+                model=model,
+                messages=new_messages,
+                max_tokens=max_tokens,
+                strict=strict,
+                tools=remaining_tools,
+                response_format=response_schema,
+                extra_body=extra_body,
+                depth=depth + 1,
+            ):
+                print(f"DEBUG: Recursive call yielded: {repr(event[:50])}")
+                yield event
+        print(f"DEBUG: Exiting _stream_openai_structured at depth={depth}")
+
+
+
+    async def _stream_qwen_structured(
+        self,
+        model: str,
+        messages: List[LLMMessage],
+        response_format: dict,
+        strict: bool = False,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[dict]] = None,
+        extra_body: Optional[dict] = None,
+        depth: int = 0,
+    ) -> AsyncGenerator[str, None]:
         
+        return self._stream_openai_structured(
+            model=model,
+            messages=messages,
+            response_format=response_format,
+            strict=strict,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
+            depth=depth,
+        )
+
+    
+    
+    
+    def stream_structured(
+            self,
+            model: str,
+            messages: List[LLMMessage],
+            response_format: dict,
+            strict: bool = False,
+            tools: Optional[List[type[LLMTool]| LLMDynamicTool]] = None,
+            max_tokens : Optional[int] = None
+    ):
+        parsed_tools = self.tool_call_handler.parse_tools(tools)
+
+        match self.llm_provider:
+            case LLMProvider.OPENAI:
+                return self._stream_openai_structured(
+                    model = model, 
+                    messages = messages, 
+                    response_format=response_format,
+                    strict = strict, 
+                    tools = parsed_tools,
+                    max_tokens = max_tokens
+                )
+            
+            case LLMProvider.QWEN:
+                return self._stream_openai_structured(
+                    model = model, 
+                    messages = messages, 
+                    response_format=response_format,
+                    strict = strict, 
+                    tools = parsed_tools,
+                    max_tokens = max_tokens
+                )
+            
     async def _get_system_prompt(self, messages: List[LLMMessage]):
         for msg in messages:
             if isinstance(msg, LLMSystemMessage):

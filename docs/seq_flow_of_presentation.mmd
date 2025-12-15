@@ -1,0 +1,80 @@
+sequenceDiagram
+    participant Client
+    participant API
+    participant PresentationModel
+    participant SlideModel
+    participant LayoutCodeModel
+    participant ImageAsset
+    
+    %% Step 1: Create Presentation
+    rect rgb(200, 230, 255)
+        Note over Client,PresentationModel: Step 1: Create Presentation
+        Client->>API: POST /presentation/create
+        API->>PresentationModel: CREATE new record
+        Note over PresentationModel: id: UUID<br/>content: "ML Intro"<br/>n_slides: 10<br/>outlines: NULL<br/>layout: NULL<br/>structure: NULL
+        PresentationModel-->>Client: Return presentation ID
+    end
+    
+    %% Step 2: Generate Outlines
+    rect rgb(200, 255, 230)
+        Note over Client,PresentationModel: Step 2: Generate Outlines (Streaming)
+        Client->>API: GET /outlines/stream/{id}
+        API->>PresentationModel: FETCH presentation
+        API->>API: AI generates outlines
+        API->>PresentationModel: UPDATE outlines, title
+        Note over PresentationModel: outlines: {slides: [...]}<br/>title: "Machine Learning"
+        PresentationModel-->>Client: Stream chunks + complete
+    end
+    
+    %% Step 3: Prepare Presentation
+    rect rgb(255, 240, 200)
+        Note over Client,PresentationModel: Step 3: Prepare Layout & Structure
+        Client->>API: POST /presentation/prepare
+        API->>PresentationModel: FETCH presentation
+        API->>PresentationModel: UPDATE layout, structure
+        Note over PresentationModel: layout: {...}<br/>structure: [...]
+        PresentationModel-->>Client: Return updated presentation
+    end
+    
+    %% Step 4: Generate Slides
+    rect rgb(255, 220, 230)
+        Note over Client,SlideModel: Step 4: Generate Slide Content (Streaming)
+        Client->>API: GET /presentation/stream/{id}
+        API->>PresentationModel: FETCH presentation
+        loop For each outline
+            API->>API: AI generates slide content
+            API->>SlideModel: CREATE slide record
+            Note over SlideModel: presentation: UUID (FK)<br/>index: 0, 1, 2...<br/>content: {...}<br/>layout: "title_slide"
+        end
+        SlideModel-->>Client: Stream progress
+    end
+    
+    %% Step 5: Fetch Assets
+    rect rgb(230, 200, 255)
+        Note over Client,ImageAsset: Step 5: Generate/Fetch Assets
+        API->>API: Generate/download images
+        loop For each image
+            API->>ImageAsset: CREATE asset record
+            Note over ImageAsset: path: "/uploads/img1.png"<br/>is_uploaded: true
+        end
+    end
+    
+    %% Step 6: Generate Layout Code
+    rect rgb(200, 255, 255)
+        Note over Client,LayoutCodeModel: Step 6: Generate Custom Layout Code
+        API->>API: Generate TSX/React code
+        API->>LayoutCodeModel: CREATE layout code
+        Note over LayoutCodeModel: presentation: UUID<br/>layout_code: "..."<br/>fonts: [...]
+    end
+    
+    %% Step 7: Export
+    rect rgb(220, 255, 220)
+        Note over Client,API: Step 7: Export Presentation
+        Client->>API: POST /presentation/export
+        API->>PresentationModel: FETCH presentation
+        API->>SlideModel: FETCH all slides
+        API->>LayoutCodeModel: FETCH layout code
+        API->>ImageAsset: FETCH assets
+        API->>API: Generate PPTX/PDF
+        API-->>Client: Return file
+    end
